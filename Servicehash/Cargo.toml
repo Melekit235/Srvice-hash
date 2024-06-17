@@ -23,3 +23,9 @@ openssl-sys = "0.9"
 openssl = "0.10"
 
 hex = "0.4.3"
+
+openapi = "0.1.5"
+utoipa = { version = "4.2.2", features = ["actix_extras"] }
+utoipa-swagger-ui = { version = "7.1.0", features = ["actix-web"] }
+
+serde = { version = "1.0", features = ["derive"] }
