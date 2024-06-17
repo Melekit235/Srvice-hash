@@ -5,19 +5,23 @@ use openssl::sha::Sha256;
 //use openssl::hash::{hash, MessageDigest};
 use hex;
 
-const CHUNK_SIZE: usize = 8192; // размер каждого чанк
+use tokio::task;
+use tokio::sync::mpsc::channel;
+
+const CHUNK_SIZE: usize = 8192;
 
 async fn hash_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
-
-    let hash_hex;
-    //let mut hasher = Hasher::new(MessageDigest::sha256())?;
-    let mut hasher = Sha256::new();
-    //hasher.update(b"test")?;
-    //hasher.update(b"this")?;
-    //let digest: &[u8] = &hasher.finish()?;
+    
+    let (tx, mut rx) = channel::<Vec<u8>>(10); 
+    let hash_handle = task::spawn(async move {
+        let mut hasher = Sha256::new();
+        while let Some(data) = rx.recv().await {
+            hasher.update(&data);
+        }
+        hasher.finish()
+    });
 
     while let Some(mut field) = payload.try_next().await? {
-        
         let mut buffer = Vec::with_capacity(CHUNK_SIZE);
 
         while let Some(chunk) = field.try_next().await? {
@@ -25,18 +29,20 @@ async fn hash_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
 
             if buffer.len() == CHUNK_SIZE {
                 let write_buffer = buffer.split_off(0);
-                hasher.update(&write_buffer);
-                buffer.clear();
+                tx.send(write_buffer).await.unwrap();
             }
         }
 
         if !buffer.is_empty() {
-            hasher.update(&buffer);
+            tx.send(buffer).await.unwrap();
         }
-
     }
-    let result = hasher.finish();
-    hash_hex = hex::encode(result);
+
+    drop(tx);
+
+    let result = hash_handle.await.unwrap();
+    let hash_hex = hex::encode(result);
+
     Ok(HttpResponse::Ok().body(hash_hex))
 }
 
