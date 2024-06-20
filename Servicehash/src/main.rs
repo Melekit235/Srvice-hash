@@ -15,6 +15,8 @@ use utoipa::ToSchema;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use base64::prelude::*;
+
 const CHUNK_SIZE: usize = 8192;
 
 #[derive(Serialize, ToSchema)]
@@ -22,6 +24,63 @@ struct HashFileResponse {
     hash: String,
 }
 
+#[derive(Serialize, ToSchema)]
+struct Base64FileResponse {
+    base64_content: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/encode",
+    request_body(
+        content = Multipart, 
+        description = "The file to be encode",
+        content_type = "multipart/form-data",
+    ),
+    responses(
+        (status = 200, description = "Base64 encoded file content", body = Base64FileResponse),
+        (status = 400, description = "POST without data")
+    ),
+    tag = "encode",
+)]
+async fn encode_base64(mut payload: Multipart) -> Result<HttpResponse, Error> {
+    
+    let (tx, mut rx) = channel::<Vec<u8>>(10);
+
+    let encode_handle = task::spawn(async move {
+        let mut base64_content = String::new();
+        while let Some(data) = rx.recv().await {
+
+            base64_content.push_str(BASE64_STANDARD.encode(data).as_str()) ;
+        }
+        base64_content
+    });
+
+    
+
+    while let Some(mut field) = payload.try_next().await? {
+        let mut buffer = Vec::with_capacity(CHUNK_SIZE);
+
+        while let Some(chunk) = field.try_next().await? {
+            buffer.extend_from_slice(&chunk);
+
+            if buffer.len() == CHUNK_SIZE {
+                let write_buffer = buffer.split_off(0);
+                tx.send(write_buffer).await.unwrap();
+            }
+        }
+
+        if !buffer.is_empty() {
+            tx.send(buffer).await.unwrap();
+        }
+    }
+
+    drop(tx);
+
+    let base64_content = encode_handle.await.unwrap();
+
+    Ok(HttpResponse::Ok().json(Base64FileResponse { base64_content }))
+}
 
 
 #[utoipa::path(
@@ -39,7 +98,9 @@ struct HashFileResponse {
     tag = "hash",
 )]
 async fn hash_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
+    
     let (tx, mut rx) = channel::<Vec<u8>>(10);
+    
     let hash_handle = task::spawn(async move {
         let mut hasher = Sha256::new();
         while let Some(data) = rx.recv().await {
@@ -96,7 +157,7 @@ async fn index() -> HttpResponse {
 }
 
 #[derive(OpenApi)]
-#[openapi(paths(index, hash_file), components(schemas( HashFileResponse)))]
+#[openapi(paths(index, hash_file, encode_base64), components(schemas(HashFileResponse, Base64FileResponse)))]
 struct ApiDoc;
 
 #[actix_web::main]
@@ -116,6 +177,11 @@ async fn main() -> std::io::Result<()> {
             .service(
                 SwaggerUi::new("/swagger/{_:.*}")
                     .url("/api-docs/openapi.json", ApiDoc::openapi()),
+            )
+            .service(
+                web::resource("/encode")
+                    .route(web::get().to(index))
+                    .route(web::post().to(encode_base64))
             )
     })
     .bind(("127.0.0.1", 8080))?
