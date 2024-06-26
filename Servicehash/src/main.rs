@@ -265,30 +265,8 @@ async fn hash_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
     Ok(HttpResponse::Ok().json(HashFileResponse { hash: hash_hex }))
 }
 
-#[utoipa::path(
-    get,
-    path = "/hashfile",
-    responses(
-        (status = 200, description = "HTML upload form")
-    ),
-    tag = "index"
-)]
-async fn index() -> HttpResponse {
-    let html = r#"<html>
-        <head><title>Upload Test</title></head>
-        <body>
-            <form target="/" method="post" enctype="multipart/form-data">
-                <input type="file" multiple name="file"/>
-                <button type="submit">Submit</button>
-            </form>
-        </body>
-    </html>"#;
-
-    HttpResponse::Ok().body(html)
-}
-
 #[derive(OpenApi)]
-#[openapi(paths(index, hash_file, encode_base64, upload_file, get_file_status), components(schemas(HashFileResponse, Base64FileResponse, FileStatus, FilePath)))]
+#[openapi(paths(hash_file, encode_base64, upload_file, get_file_status), components(schemas(HashFileResponse, Base64FileResponse, FileStatus, FilePath)))]
 struct ApiDoc;
 
 
@@ -309,7 +287,6 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .service(
                 web::resource("/hashfile")
-                    .route(web::get().to(index))
                     .route(web::post().to(hash_file)),
             )
             .service(
@@ -318,7 +295,6 @@ async fn main() -> std::io::Result<()> {
             )
             .service(
                 web::resource("/encode")
-                    .route(web::get().to(index))
                     .route(web::post().to(encode_base64))
             )            
             .service(
@@ -333,7 +309,6 @@ async fn main() -> std::io::Result<()> {
                 SwaggerUi::new("/swagger/{_:.*}")
                     .url("/api-docs/openapi.json", ApiDoc::openapi()),
             )
-            .service(web::resource("/").route(web::get().to(index)))
     })
     .bind((host.as_str(), port))?
     .workers(2)
