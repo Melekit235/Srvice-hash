@@ -1,9 +1,11 @@
 use actix_multipart::Multipart;
-use actix_web::{middleware, web, App, Error, HttpResponse, HttpServer};
+use actix_web::{middleware, web, App, Error, HttpResponse, HttpServer, Result};
+pub use actix_web::web::Path;
 
 use futures_util::TryStreamExt as _;
 use openssl::sha::Sha256;
 
+use serde::Deserialize;
 use serde::Serialize;
 
 use hex;
@@ -17,6 +19,16 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use base64::prelude::*;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::env;
+use std::fs::File;
+use uuid::Uuid;
+
+use tokio::sync::RwLock;
+use std::io::Read;
+
+
 const CHUNK_SIZE: usize = 8192;
 
 #[derive(Serialize, ToSchema)]
@@ -27,6 +39,125 @@ struct HashFileResponse {
 #[derive(Serialize, ToSchema)]
 struct Base64FileResponse {
     base64_content: String,
+}
+
+#[derive(Serialize, ToSchema)]
+struct FileStatus {
+    id: String,
+    location: String,
+    hash: Option<String>,
+    status: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct FilePath {
+    path: String,
+}
+
+type FileDatabase = Arc<RwLock<HashMap<String, FileStatus>>>;
+
+#[utoipa::path(
+    post,
+    path = "/upload",
+    request_body(
+        content = FilePath, 
+        description = "The file path to be uploaded",
+        content_type = "application/json",
+    ),
+    responses(
+        (status = 200, description = "File path uploaded and processing", body = FileStatus),
+        (status = 400, description = "POST without data")
+    ),
+    tag = "hash",
+)]
+async fn upload_file(file_path: web::Json<FilePath>, db: web::Data<FileDatabase>) -> Result<HttpResponse, Error> {
+    let file_id = Uuid::new_v4().to_string();
+    let file_status = FileStatus {
+        id: file_id.clone(),
+        location: file_path.path.clone(),
+        hash: None,
+        status: "processing".to_string(),
+    };
+
+    {
+        let mut db_write = db.write().await;
+        db_write.insert(file_id.clone(), file_status);
+    }
+
+    let db_clone = db.clone();
+    let file_path_clone = file_path.path.clone();
+    let file_id_clone = file_id.clone();
+    task::spawn(async move {
+        let mut hasher = Sha256::new();
+        let mut file = match File::open(&file_path_clone) {
+            Ok(file) => file,
+            Err(_) => {
+                let mut db_write = db_clone.write().await;
+                if let Some(file_status) = db_write.get_mut(&file_id_clone) {
+                    file_status.status = "error: file not found".to_string();
+                }
+                return;
+            }
+        };
+        let mut buffer = [0u8; CHUNK_SIZE];
+
+        loop {
+            let n = match file.read(&mut buffer) {
+                Ok(n) if n == 0 => break,
+                Ok(n) => n,
+                Err(_) => {
+                    let mut db_write = db_clone.write().await;
+                    if let Some(file_status) = db_write.get_mut(&file_id_clone) {
+                        file_status.status = "error: failed to read file".to_string();
+                    }
+                    return;
+                }
+            };
+            hasher.update(&buffer[..n]);
+        }
+
+        let hash = hex::encode(hasher.finish());
+
+        let mut db_write = db_clone.write().await;
+        if let Some(file_status) = db_write.get_mut(&file_id_clone) {
+            file_status.hash = Some(hash);
+            file_status.status = "ready".to_string();
+        }
+    });
+
+    let db_read = db.read().await;
+    let file_status = db_read.get(&file_id).unwrap();
+
+    Ok(HttpResponse::Ok().json(file_status.id.clone()))
+}
+
+#[utoipa::path(
+    get,
+    path = "/status/{file_id}",
+    responses(
+        (status = 200, description = "File in process", body = FileStatus),
+        (status = 200, description = "File hashed", body = HashFileResponse),
+        (status = 404, description = "File not found")
+    ),
+    tag = "hash",
+)]
+async fn get_file_status(path: web::Path<String>, db: web::Data<FileDatabase>) -> Result<HttpResponse, Error> {
+
+    let file_id = path.into_inner();
+
+    let mut db_write = db.write().await;
+    if let Some(file_status) = db_write.get(&file_id) {
+        if file_status.status == "ready" {
+            let hash = file_status.hash.clone().unwrap();
+            db_write.remove(&file_id);
+            Ok(HttpResponse::Ok().json(HashFileResponse { hash }))
+        } else {
+            Ok(HttpResponse::Ok().json(file_status))
+        }
+    } else {
+        Ok(HttpResponse::NotFound().body("File ID not found"))
+    }
+
 }
 
 #[utoipa::path(
@@ -157,17 +288,24 @@ async fn index() -> HttpResponse {
 }
 
 #[derive(OpenApi)]
-#[openapi(paths(index, hash_file, encode_base64), components(schemas(HashFileResponse, Base64FileResponse)))]
+#[openapi(paths(index, hash_file, encode_base64, upload_file, get_file_status), components(schemas(HashFileResponse, Base64FileResponse, FileStatus, FilePath)))]
 struct ApiDoc;
+
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
-    log::info!("starting HTTP server at http://localhost:8080");
+    let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port: u16 = env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse().unwrap_or(8080);
 
-    HttpServer::new(|| {
+    log::info!("starting HTTP server at http://{}:{}", host, port);
+
+    let db: FileDatabase = Arc::new(RwLock::new(HashMap::new()));
+
+    HttpServer::new(move || {
         App::new()
+            .app_data(web::Data::new(db.clone()))
             .wrap(middleware::Logger::default())
             .service(
                 web::resource("/hashfile")
@@ -182,9 +320,22 @@ async fn main() -> std::io::Result<()> {
                 web::resource("/encode")
                     .route(web::get().to(index))
                     .route(web::post().to(encode_base64))
+            )            
+            .service(
+                web::resource("/upload")
+                    .route(web::post().to(upload_file)),
             )
+            .service(
+                web::resource("/status/{file_id}")
+                    .route(web::get().to(get_file_status)),
+            )
+            .service(
+                SwaggerUi::new("/swagger/{_:.*}")
+                    .url("/api-docs/openapi.json", ApiDoc::openapi()),
+            )
+            .service(web::resource("/").route(web::get().to(index)))
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind((host.as_str(), port))?
     .workers(2)
     .run()
     .await
