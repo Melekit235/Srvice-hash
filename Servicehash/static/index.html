@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Upload</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 2em;
+        }
+        form {
+            margin-bottom: 1em;
+        }
+        #response {
+            margin-top: 1em;
+            padding: 1em;
+            border: 1px solid #ccc;
+            background: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+    <h1>File Upload</h1>
+    
+    <h2>Upload File Path</h2>
+    <form id="upload-form">
+        <label for="file-path">File Path:</label>
+        <input type="text" id="file-path" name="file-path" required>
+        <button type="submit">Upload</button>
+    </form>
+
+    <h2>Get File Status</h2>
+    <form id="status-form">
+        <label for="file-id">File ID:</label>
+        <input type="text" id="file-id" name="file-id" required>
+        <button type="submit">Get Status</button>
+    </form>
+
+    <h2>Upload and Encode File</h2>
+    <form id="encode-form" enctype="multipart/form-data">
+        <label for="file-to-encode">File:</label>
+        <input type="file" id="file-to-encode" name="file-to-encode" required>
+        <button type="submit">Upload and Encode</button>
+    </form>
+
+    <h2>Upload and Hash File</h2>
+    <form id="hash-form" enctype="multipart/form-data">
+        <label for="file-to-hash">File:</label>
+        <input type="file" id="file-to-hash" name="file-to-hash" required>
+        <button type="submit">Upload and Hash</button>
+    </form>
+
+    <div id="response"></div>
+
+    <script>
+        document.getElementById('upload-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const filePath = document.getElementById('file-path').value;
+            const response = await fetch('/upload', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ path: filePath })
+            });
+            const result = await response.json();
+            document.getElementById('response').innerText = JSON.stringify(result, null, 2);
+        });
+
+        document.getElementById('status-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const fileId = document.getElementById('file-id').value;
+            const response = await fetch(`/status/${fileId}`);
+            const result = await response.json();
+            document.getElementById('response').innerText = JSON.stringify(result, null, 2);
+        });
+
+        document.getElementById('encode-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const formData = new FormData(document.getElementById('encode-form'));
+            const response = await fetch('/encode', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            document.getElementById('response').innerText = JSON.stringify(result, null, 2);
+        });
+
+        document.getElementById('hash-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const formData = new FormData(document.getElementById('hash-form'));
+            const response = await fetch('/hashfile', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            document.getElementById('response').innerText = JSON.stringify(result, null, 2);
+        });
+    </script>
+</body>
+</html>

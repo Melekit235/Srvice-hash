@@ -128,7 +128,8 @@ async fn upload_file(file_path: web::Json<FilePath>, db: web::Data<FileDatabase>
     let db_read = db.read().await;
     let file_status = db_read.get(&file_id).unwrap();
 
-    Ok(HttpResponse::Ok().json(file_status.id.clone()))
+
+    Ok(HttpResponse::Ok().json(file_status))
 }
 
 #[utoipa::path(
@@ -186,8 +187,6 @@ async fn encode_base64(mut payload: Multipart) -> Result<HttpResponse, Error> {
         }
         base64_content
     });
-
-    
 
     while let Some(mut field) = payload.try_next().await? {
         let mut buffer = Vec::with_capacity(CHUNK_SIZE);
@@ -309,6 +308,7 @@ async fn main() -> std::io::Result<()> {
                 SwaggerUi::new("/swagger/{_:.*}")
                     .url("/api-docs/openapi.json", ApiDoc::openapi()),
             )
+            .service(actix_files::Files::new("/", "./static").index_file("index.html"))
     })
     .bind((host.as_str(), port))?
     .workers(2)
